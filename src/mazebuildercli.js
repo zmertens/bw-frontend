@@ -630,12 +630,9 @@ async function instantiateAsync(binary, binaryFile, imports) {
   if (!binary
       // Don't use streaming for file:// delivered objects in a webview, fetch them synchronously.
       && !isFileURI(binaryFile)
-      // Avoid instantiateStreaming() on Node.js environment for now, as while
-      // Node.js v18.1.0 implements it, it does not have a full fetch()
-      // implementation yet.
-      //
-      // Reference:
-      //   https://github.com/emscripten-core/emscripten/pull/16917
+      // Avoid using instantiateStreaming() on Node.js since the `fetch()` API
+      // does not support `file://` URLs.
+      // See: https://github.com/emscripten-core/emscripten/pull/16917
       && !ENVIRONMENT_IS_NODE
      ) {
     try {
@@ -1002,6 +999,10 @@ async function createWasm() {
   
   
   
+  
+  var __Unwind_RaiseException = (ex) => {
+      throw ex;
+    };
   var ___cxa_rethrow = () => {
       if (!exceptionCaught.length) {
         abort('no exception to throw');
@@ -1012,8 +1013,8 @@ async function createWasm() {
       info.set_caught(false);
       uncaughtExceptionCount++;
       ___cxa_increment_exception_refcount(ptr);
-      exceptionLast = new CppException(ptr);
-      throw exceptionLast;
+      ptr = exceptionLast = new CppException(ptr);
+      __Unwind_RaiseException(ptr);
     };
 
   
@@ -1049,23 +1050,26 @@ async function createWasm() {
   var decrementExceptionRefcount = (exn) => ___cxa_decrement_exception_refcount(exn.excPtr);
   
   var incrementExceptionRefcount = (exn) => ___cxa_increment_exception_refcount(exn.excPtr);
+  
   var ___cxa_throw = (ptr, type, destructor) => {
       var info = new ExceptionInfo(ptr);
       // Initialize ExceptionInfo content after it was allocated in __cxa_allocate_exception.
       info.init(type, destructor);
       ___cxa_increment_exception_refcount(ptr);
-      exceptionLast = new CppException(ptr);
+      ptr = exceptionLast = new CppException(ptr);
       uncaughtExceptionCount++;
-      throw exceptionLast;
+      __Unwind_RaiseException(ptr);
     };
 
   var ___cxa_uncaught_exceptions = () => uncaughtExceptionCount;
 
+  
+  var __Unwind_Resume = (ex) => {
+      throw ex;
+    };
   var ___resumeException = (ptr) => {
-      if (!exceptionLast) {
-        exceptionLast = new CppException(ptr);
-      }
-      throw exceptionLast;
+      ptr = exceptionLast ??= new CppException(ptr);
+      __Unwind_Resume(ptr);
     };
 
   var syscallGetVarargI = () => {
@@ -1293,6 +1297,9 @@ async function createWasm() {
             if (result === null || result === undefined) break;
             bytesRead++;
             buffer[offset+i] = result;
+            // We currently only support canonical mode (ICANON), where
+            // read(2) returns as soon as a line delimiter is read.
+            if (result === 10) break;
           }
           if (bytesRead) {
             stream.node.atime = Date.now();
@@ -2135,6 +2142,7 @@ async function createWasm() {
   
   
   
+  
   var NODERAWFS_stream_funcs = {
   close(stream) {
         VFS.closeStream(stream.fd);
@@ -2213,10 +2221,10 @@ async function createWasm() {
         return { path, node: { id: st.ino, mode, node_ops: NODERAWFS, path }};
       },
   createStandardStreams() {
-        FS.createStream({ nfd: 0, position: 0, path: '/dev/stdin', flags: 0, seekable: false }, 0);
+        FS.createStream({ nfd: 0, position: 0, path: '/dev/stdin', flags: 0 }, 0);
         var paths = [,'/dev/stdout', '/dev/stderr'];
         for (var i = 1; i < 3; i++) {
-          FS.createStream({ nfd: i, position: 0, path: paths[i], flags: 577, seekable: false }, i);
+          FS.createStream({ nfd: i, position: 0, path: paths[i], flags: 577 }, i);
         }
       },
   cwd() { return process.cwd(); },
@@ -2348,7 +2356,10 @@ async function createWasm() {
         if (!stream.stream_ops) {
           rtn.shared.refcnt ??= 0;
           rtn.shared.refcnt++;
-          rtn.tty = nodeTTY.isatty(rtn.nfd);
+          if (nodeTTY.isatty(rtn.nfd)) {
+            rtn.tty = { ops: TTY.default_tty_ops };
+            rtn.seekable = false;
+          }
         }
         return rtn;
       },

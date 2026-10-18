@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import LoadingProgressComponent from "./LoadingProgressComponent";
 // @ts-ignore - Emscripten factory function with adjacent .d.ts
 import ModuleFactory from "../Breaking_Walls_App";
 
@@ -24,6 +25,7 @@ interface ModuleConfig {
   canvas?: HTMLCanvasElement;
   print?(...args: any[]): void;
   onRuntimeInitialized?(): void;
+  setStatus?(text: string): void;
   requestFullscreen?: undefined;
 }
 
@@ -32,6 +34,9 @@ const MazeBuilderComponent = () => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const instanceRef = useRef<craft | null>(null);
   const intervalIdRef = useRef<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadStatus, setLoadStatus] = useState("Downloading...");
+  const [loadProgress, setLoadProgress] = useState<number | undefined>();
   const exportStatusRef = useRef<string>("idle");
 
   useEffect(() => {
@@ -192,8 +197,25 @@ const MazeBuilderComponent = () => {
               console.log("[WASM]", ...args);
             }
           },
+          setStatus: (text: string) => {
+            if (isUnmounted) return;
+            // Emscripten reports progress as "Label (current/total)"
+            const m = text.match(/([^(]+)\((\d+(?:\.\d+)?)\/(\d+)\)/);
+            if (m) {
+              setLoadStatus(m[1].trim());
+              setLoadProgress((Number(m[2]) / Number(m[3])) * 100);
+              setLoading(true);
+            } else if (text) {
+              setLoadStatus(text);
+              setLoadProgress(undefined);
+              setLoading(true);
+            } else {
+              setLoading(false);
+            }
+          },
           onRuntimeInitialized: () => {
             console.log("[WASM] Runtime initialized");
+            setLoading(false);
             initializeEngine();
           },
         };
@@ -212,6 +234,8 @@ const MazeBuilderComponent = () => {
         console.log("WASM module loaded:", activeModule);
       } catch (err) {
         console.error("Error loading WASM module:", err);
+        setLoadStatus("Failed to load, see console");
+        setLoadProgress(undefined);
       }
     };
 
@@ -245,6 +269,11 @@ const MazeBuilderComponent = () => {
           style={{ display: "block", flex: 1 }}
         />
       </div>
+      <LoadingProgressComponent
+        open={loading}
+        status={loadStatus}
+        progress={loadProgress}
+      />
     </>
   );
 };
