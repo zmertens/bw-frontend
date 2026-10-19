@@ -1,7 +1,7 @@
 {
-  "name": "maze-builder-frontend",
+  "name": "bw-frontend",
   "private": true,
-  "version": "0.0.2",
+  "version": "0.0.25",
   "type": "module",
   "scripts": {
     "dev": "vite",
