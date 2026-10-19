@@ -9,7 +9,7 @@ function App() {
 
   const DynamicComponent = React.lazy(() =>
     isDomAvailable
-      ? import("./components/MazeBuilderComponent")
+      ? import("./components/WasmDriverComponent")
       : Promise.resolve({ default: () => <div /> })
   );
 

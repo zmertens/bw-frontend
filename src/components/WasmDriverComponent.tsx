@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import LoadingProgressComponent from "./LoadingProgressComponent";
 // @ts-ignore - Emscripten factory function with adjacent .d.ts
-import ModuleFactory from "../Breaking_Walls_App";
+import ModuleFactory from "../breaking-walls-wasm/Breaking_Walls_App.js";
 
 // Types from Breaking_Walls_App.d.ts
 interface craft {
