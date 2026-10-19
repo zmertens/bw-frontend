@@ -2,14 +2,7 @@
 
 # Breaking Walls frontend AKA `bw-frontend`
 
-Provides the [Breaking Walls](https://www.github.com/zmertens/BreakingWalls) application with a web interface and a distributed environment.
-
-Breaking Walls is is a fully-featured Voxel engine based off of an open-source engine - [craft](https://www.github.com/fogleman/craft). It has continuous gameplay via swiping gestures (mouse presses, touch, joystick). It has modern graphics via WebGL and shaders
-as well as support for audio and sound effects.
-
-Levels are generated with a random and procedural maze-generating library, [Maze Builder](https://www.github.com/zmertens/MazeBuilder). There are model export capabilities for Wavefront Object formats.
-
-It is a hobby project and has been my attempt at an ode to the magicians that built the gamedev landscape and tools (like C and OpenGL, primarily focusing on the C++11 standards and onward).
+React app that powers the [Breaking Walls](https://www.github.com/zmertens/BreakingWalls) application and provides it with a web interface.
 
 ## Build and Run
 
