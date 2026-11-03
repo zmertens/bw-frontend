@@ -539,7 +539,7 @@ void main() {
     brightColor = vec4(0.0, 0.0, 0.0, 1.0);
 }
 #version 300 es
-precision highp float;
+precision mediump float;
 
 uniform samplerCube environment_map;
 uniform float rotation;
@@ -552,6 +552,11 @@ uniform bool static_horizon;
 // camera yaw, pitch, tan(fov / 2), aspect; used when use_view is set to look through the world-fixed cubemap
 uniform vec4 view;
 uniform bool use_view;
+// camera position, heightmap side (world units); the map spans [0, side] on x and z
+uniform vec4 ocean;
+uniform float sea_level;
+// camera offset in backdrop units; each layer scrolls by a different share of it (parallax)
+uniform vec2 parallax;
 in vec2 screen_position;
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec4 brightColor;
@@ -573,6 +578,35 @@ vec3 neon_field(vec2 world) {
     return radiance * (1.0 + animation.z * 0.035);
 }
 
+// Rings of water spread outward from the heightmap edge, like transition_wave but on a sea plane.
+vec3 ocean_surface(vec3 direction, vec3 sky) {
+    // Branch-free so no driver has to translate early returns or ternaries.
+    float valid = step(direction.y, -0.002) * (1.0 - step(ocean.y, sea_level));
+    float dy = min(direction.y, -0.002);
+    float t = (sea_level - ocean.y) / dy;
+    vec2 hit = ocean.xz + direction.xz * t;
+    vec2 centered = hit - vec2(ocean.w * 0.5);
+    vec2 outside = max(abs(centered) - vec2(ocean.w * 0.5), 0.0);
+    float edge = length(outside);
+    vec2 outward = outside * sign(centered) / max(edge, 1e-4);
+    float travel = edge * 1.6 - animation.x * 1.8;
+    float envelope = smoothstep(-0.5, 1.5, edge) * exp(-edge * 0.035);
+    // Cross ripples keep the open water from looking like perfectly straight rings.
+    float slope = (cos(travel) * 0.35 + cos(edge * 3.1 - animation.x * 2.7) * 0.12) * envelope
+                + 0.04 * cos(hit.x * 0.9 + animation.x * 1.1) * cos(hit.y * 0.8 - animation.x * 0.9);
+    vec3 normal = normalize(vec3(-outward.x * slope, 1.0, -outward.y * slope));
+    float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(normal, -direction), 0.0), 5.0);
+    vec3 reflected = texture(environment_map, reflect(direction, normal)).rgb * 0.9 + vec3(0.01, 0.015, 0.04);
+    vec3 deep = vec3(0.02, 0.18, 0.30);
+    vec3 shallow = vec3(0.10, 0.50, 0.55);
+    vec3 water = mix(deep, shallow, exp(-edge * 0.25));
+    vec3 color = mix(water, reflected, clamp(fresnel + 0.2, 0.0, 1.0));
+    float foam = smoothstep(0.55, 1.0, sin(travel)) * exp(-edge * 0.7) * smoothstep(-0.2, 0.3, edge);
+    color += vec3(0.85, 0.95, 1.0) * foam * 0.45;
+    // Distant water melts into the horizon sky.
+    return mix(sky, color, valid * (1.0 - smoothstep(40.0, 260.0, t)));
+}
+
 void view_sky() {
     const float pi = 3.14159265359;
     vec3 forward = vec3(cos(view.x - pi * 0.5) * cos(view.y), sin(view.y), sin(view.x - pi * 0.5) * cos(view.y));
@@ -587,6 +621,7 @@ void view_sky() {
     float sun = 1.0 - smoothstep(0.045, 0.07, angle);
     float halo = 1.0 - smoothstep(0.06, 0.26, angle);
     radiance += vec3(1.0, 0.50, 0.16) * halo * 0.25 + vec3(1.0, 0.88, 0.58) * sun * 2.0;
+    radiance = ocean_surface(direction, radiance);
     fragColor = vec4(radiance, 1.0);
     brightColor = vec4(0.0, 0.0, 0.0, 1.0);
 }
@@ -599,6 +634,8 @@ void main() {
     vec2 local = vec2(screen_position.x, -screen_position.y) * viewport_scale / zoom;
     float c = cos(rotation), s = sin(rotation);
     vec2 world = vec2(c * local.x - s * local.y, s * local.x + c * local.y) + pan;
+    vec2 far_world = world + parallax * 0.25;
+    world += parallax;
     // Rings spread outward from the heightmap edge; every lit light adds strength. They bend the
     // cubemap lookup (refraction) and brighten it (reflection), so the clouds ripple instead of fog.
     float board_distance = max(abs(world.x), abs(world.y)) / max(animation.w, 0.01);
@@ -608,7 +645,7 @@ void main() {
     float strength = envelope * (0.35 + 0.13 * animation.z);
     float wave = sin(travel);
     vec2 outward = normalize(world + vec2(1e-4));
-    vec3 direction = normalize(vec3(world.x, -0.7, world.y) + vec3(outward.x, 0.0, outward.y) * wave * strength * 0.5);
+    vec3 direction = normalize(vec3(far_world.x, -0.7, far_world.y) + vec3(outward.x, 0.0, outward.y) * wave * strength * 0.5);
     vec3 clouds = texture(environment_map, direction).rgb;
     vec3 radiance = neon_field(world) * 0.6 + clouds * (0.55 + 0.9 * strength * (0.5 + 0.5 * wave));
     if (static_horizon) {
@@ -624,7 +661,7 @@ void main() {
     brightColor = vec4(0.0, 0.0, 0.0, 1.0);
 }
 #version 300 es
-precision highp float;
+precision mediump float;
 
 out vec2 screen_position;
 
@@ -1028,6 +1065,11 @@ uniform bool static_horizon;
 // camera yaw, pitch, tan(fov / 2), aspect; used when use_view is set to look through the world-fixed cubemap
 uniform vec4 view;
 uniform bool use_view;
+// camera position, heightmap side (world units); the map spans [0, side] on x and z
+uniform vec4 ocean;
+uniform float sea_level;
+// camera offset in backdrop units; each layer scrolls by a different share of it (parallax)
+uniform vec2 parallax;
 in vec2 screen_position;
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec4 brightColor;
@@ -1049,6 +1091,35 @@ vec3 neon_field(vec2 world) {
     return radiance * (1.0 + animation.z * 0.035);
 }
 
+// Rings of water spread outward from the heightmap edge, like transition_wave but on a sea plane.
+vec3 ocean_surface(vec3 direction, vec3 sky) {
+    // Branch-free so no driver has to translate early returns or ternaries.
+    float valid = step(direction.y, -0.002) * (1.0 - step(ocean.y, sea_level));
+    float dy = min(direction.y, -0.002);
+    float t = (sea_level - ocean.y) / dy;
+    vec2 hit = ocean.xz + direction.xz * t;
+    vec2 centered = hit - vec2(ocean.w * 0.5);
+    vec2 outside = max(abs(centered) - vec2(ocean.w * 0.5), 0.0);
+    float edge = length(outside);
+    vec2 outward = outside * sign(centered) / max(edge, 1e-4);
+    float travel = edge * 1.6 - animation.x * 1.8;
+    float envelope = smoothstep(-0.5, 1.5, edge) * exp(-edge * 0.035);
+    // Cross ripples keep the open water from looking like perfectly straight rings.
+    float slope = (cos(travel) * 0.35 + cos(edge * 3.1 - animation.x * 2.7) * 0.12) * envelope
+                + 0.04 * cos(hit.x * 0.9 + animation.x * 1.1) * cos(hit.y * 0.8 - animation.x * 0.9);
+    vec3 normal = normalize(vec3(-outward.x * slope, 1.0, -outward.y * slope));
+    float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(normal, -direction), 0.0), 5.0);
+    vec3 reflected = texture(environment_map, reflect(direction, normal)).rgb * 0.9 + vec3(0.01, 0.015, 0.04);
+    vec3 deep = vec3(0.02, 0.18, 0.30);
+    vec3 shallow = vec3(0.10, 0.50, 0.55);
+    vec3 water = mix(deep, shallow, exp(-edge * 0.25));
+    vec3 color = mix(water, reflected, clamp(fresnel + 0.2, 0.0, 1.0));
+    float foam = smoothstep(0.55, 1.0, sin(travel)) * exp(-edge * 0.7) * smoothstep(-0.2, 0.3, edge);
+    color += vec3(0.85, 0.95, 1.0) * foam * 0.45;
+    // Distant water melts into the horizon sky.
+    return mix(sky, color, valid * (1.0 - smoothstep(40.0, 260.0, t)));
+}
+
 void view_sky() {
     const float pi = 3.14159265359;
     vec3 forward = vec3(cos(view.x - pi * 0.5) * cos(view.y), sin(view.y), sin(view.x - pi * 0.5) * cos(view.y));
@@ -1063,6 +1134,7 @@ void view_sky() {
     float sun = 1.0 - smoothstep(0.045, 0.07, angle);
     float halo = 1.0 - smoothstep(0.06, 0.26, angle);
     radiance += vec3(1.0, 0.50, 0.16) * halo * 0.25 + vec3(1.0, 0.88, 0.58) * sun * 2.0;
+    radiance = ocean_surface(direction, radiance);
     fragColor = vec4(radiance, 1.0);
     brightColor = vec4(0.0, 0.0, 0.0, 1.0);
 }
@@ -1075,6 +1147,8 @@ void main() {
     vec2 local = vec2(screen_position.x, -screen_position.y) * viewport_scale / zoom;
     float c = cos(rotation), s = sin(rotation);
     vec2 world = vec2(c * local.x - s * local.y, s * local.x + c * local.y) + pan;
+    vec2 far_world = world + parallax * 0.25;
+    world += parallax;
     // Rings spread outward from the heightmap edge; every lit light adds strength. They bend the
     // cubemap lookup (refraction) and brighten it (reflection), so the clouds ripple instead of fog.
     float board_distance = max(abs(world.x), abs(world.y)) / max(animation.w, 0.01);
@@ -1084,7 +1158,7 @@ void main() {
     float strength = envelope * (0.35 + 0.13 * animation.z);
     float wave = sin(travel);
     vec2 outward = normalize(world + vec2(1e-4));
-    vec3 direction = normalize(vec3(world.x, -0.7, world.y) + vec3(outward.x, 0.0, outward.y) * wave * strength * 0.5);
+    vec3 direction = normalize(vec3(far_world.x, -0.7, far_world.y) + vec3(outward.x, 0.0, outward.y) * wave * strength * 0.5);
     vec3 clouds = texture(environment_map, direction).rgb;
     vec3 radiance = neon_field(world) * 0.6 + clouds * (0.55 + 0.9 * strength * (0.5 + 0.5 * wave));
     if (static_horizon) {
@@ -267842,7 +267916,7 @@ f¦ÃÅ¢+vSÎ'g,¢XH€È³Üd­
 ºú‡/ðîí„Ì›îì:OinQd¾0mŠ~†¾H,ßÝÝÓ2|jïÄOú%Ž§‚aoyÍCOÃ»fG	S0ÃÓÀ Cžú*î©Ü_š²;yŸÚEÒC ›ú‹žé&šõ` ` ðÃ-Èö_ÉäþþÂG€ËÆØ€ƒ  KAÀ IÅpÁ^üõ*v¬®{¹Àó\ ÿÀÍÍò²¸"l”“*8=˜õ¿åeÙ^Î>Š iÄ›G 6
 ™+ûAÑjâ…v¡@™Ÿ1×ÿ  ŽËš²h¦>FdôµÏö96gÇ¿,@(JØò‘õÎÕü4I E Áýr¾íŠt'Þó³íìi5çÄW3”¶ÅmÓ½]3ôYçó‹2&üÌË2©É$ád"¬¤üÎ?ÛÆýi±êu
 k¿´êxdwäçÇ{²«¹Ê¡œcÌä¥.—8ÿìxLÈvX„ìü€¼ìoRPÆÐÝTWM¾%MWQx$»ï½wÍµüŠ%ðÎ]²aN1T¿Ö_.ÜÌ”o¤8õ-‹wË	ÛIÉìÇãäòÍ$B3Ÿñ.~¯N´V‰ˆ°dÌóºwÎù’‘ÐyûÃdþ*º(ï=qüýýigv¨Pær%‘-C€ýº!s0*ff¾ˆÔï·cpI±µÍâÍ8 2Ÿêñ¿hšØyò?ÔOÜß3\Ýëlöçeræí&£E±§‹TÏt´î2Wb4 lAÝ³{œ3ÄÉ—†âþ|:  A@üÓ3)@ìoÀx‹: “|X¨‡`P¸«¼¦§@ «d¿XÉtC Èá ×ÅËo“ˆÀ†ã€È÷¥Ë8ßP*6µ&ùq4Awû‹P OggS à¿P     RXÿ  ‚BhXSWRPPTk`|F™¨ À«Œb¢¨´™ÜÐJ´Bà“*. ýÀzr_m>|E'‘é[ÞîgŽÿ¾ÔîÙö§˜sfXÈNŠ·?Z"ùÿz€öýèð% |&Ç²BEÌýD*‘·Ó´¹äÐ= }Ô%*#
-ðeºl-mË9.×7¬Û”ó²t¬‰Cþ7‡æò Þfú;Ñë$©Éû­ùMÍPI&î_RGÖ³`à†_éŒ‰fu€S:4š¨†Àtœ;žz²ÒN['2¥pžUâò§{êS2¹O—Ï¾¦Þ¶7ÛÃz£½êûÆå—àÞÿ~ñÅ_ü!T<[ˆ¸@ñ‰öÒ9 d&‰ $Ó$^{‰D(Ôl§Ì*3…@¸¤kËÐ×àF—Õq§—º	÷ã‡a_¯Ê„?ßÒÅ÷ò]Ø5Ï¼yýä9Åk¼9µÙºÝ%C\E±¥ ¤&­NI…æí©QB9c¢ÏvkëŸLÑ¥¥˜DÀöx÷ûç]ÝÉñ@mÞùsÿ\Çb‘ò°]ŸÊÞOú;3ä·"k_m›Š -¬{qmï% ¼2«&“=ÙÖh©”’Ôž¹úq²žv†Ð‹²Y@n¹MÒféyòdÕáªÔ™ ¯õ½ÍÒkâ§I+^N]XX¦»\©SÓk"Œ€¼í‚€Ä¿³<–Ðj \9Õv$ºÏ¥Ñ³Ògh*Õˆ½ôî?@šÓ XaÞ³&6¹Œæ¨RþàrZ½XJW¼³Þ[†ýû¯ŸÞyÛŸþË;–¾ï|ƒ¹ó—ô–$VM´6>Ÿ¦‰éS¿ž¹¼ŸÁí=ÏÏowµòz¹m ú"—è6#¸Ÿ"ÏGGp˜ÜoÞo?ž*cS¹\Ô*sïåWO´J©TŠ‡âýùç¿ç¾üó«ëy_ôjÍýìçO»Fhâ<œõËG¬Ï>ì³»>_öÏ«[ò2BL±~ÝŸŸÇ¤ OggS         Nw      Ã6sÚvorbis    D¬       w     ¸OggS          Nw     ºÔý;ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÉvorbis+   Xiph.Org libVorbis I 20120203 (Omnipresent)    vorbis)BCV    1L Å€ÐU    `$)“fI)¥”¡(y˜”HI)¥”Å0‰˜”‰ÅcŒ1ÆcŒ1ÆcŒ 4d   €(	Ž£æIjÎ9g'Žr 9iN8§ ŠQà9	Âõ&cn¦´¦knÎ)%Y   @H!…RH!…bˆ!†bˆ!‡rÈ!§œr
+ðeºl-mË9.×7¬Û”ó²t¬‰Cþ7‡æò Þfú;Ñë$©Éû­ùMÍPI&î_RGÖ³`à†_éŒ‰fu€S:4š¨†Àtœ;žz²ÒN['2¥pžUâò§{êS2¹O—Ï¾¦Þ¶7ÛÃz£½êûÆå—àÞÿ~ñÅ_ü!T<[ˆ¸@ñ‰öÒ9 d&‰ $Ó$^{‰D(Ôl§Ì*3…@¸¤kËÐ×àF—Õq§—º	÷ã‡a_¯Ê„?ßÒÅ÷ò]Ø5Ï¼yýä9Åk¼9µÙºÝ%C\E±¥ ¤&­NI…æí©QB9c¢ÏvkëŸLÑ¥¥˜DÀöx÷ûç]ÝÉñ@mÞùsÿ\Çb‘ò°]ŸÊÞOú;3ä·"k_m›Š -¬{qmï% ¼2«&“=ÙÖh©”’Ôž¹úq²žv†Ð‹²Y@n¹MÒféyòdÕáªÔ™ ¯õ½ÍÒkâ§I+^N]XX¦»\©SÓk"Œ€¼í‚€Ä¿³<–Ðj \9Õv$ºÏ¥Ñ³Ògh*Õˆ½ôî?@šÓ XaÞ³&6¹Œæ¨RþàrZ½XJW¼³Þ[†ýû¯ŸÞyÛŸþË;–¾ï|ƒ¹ó—ô–$VM´6>Ÿ¦‰éS¿ž¹¼ŸÁí=ÏÏowµòz¹m ú"—è6#¸Ÿ"ÏGGp˜ÜoÞo?ž*cS¹\Ô*sïåWO´J©TŠ‡âýùç¿ç¾üó«ëy_ôjÍýìçO»Fhâ<œõËG¬Ï>ì³»>_öÏ«[ò2BL±~ÝŸŸÇ¤ OggS         »uz    7rƒvorbis    D¬       w     ¸OggS          »uz   b81vDÿÿÿÿÿÿÿÿÿÿÿÿÿÿÉvorbis4   Xiph.Org libVorbis I 20200704 (Reducing Environment)    vorbis)BCV    1L Å€ÐU    `$)“fI)¥”¡(y˜”HI)¥”Å0‰˜”‰ÅcŒ1ÆcŒ1ÆcŒ 4d   €(	Ž£æIjÎ9g'Žr 9iN8§ ŠQà9	Âõ&cn¦´¦knÎ)%Y   @H!…RH!…bˆ!†bˆ!‡rÈ!§œr
 *¨ ‚
 2È ƒL2é¤“N:é¨£Ž:ê(´ÐB-´ÒJL1ÕVc®½]|sÎ9çœsÎ9çœsÎ	BCV    BdB!…Rˆ)¦˜r
 2È€ÐU    €    G‘I±Ë±ÍÑ$Oò,Q5Ñ3ESTMUUUUu]Wve×vu×v}Y˜…[¸}Y¸…[Ø…]÷…a†a†a†aø}ß÷}ß÷} 4d    #9–ã)¢"¢â9¢„†¬ d    	’")’£I¦fj®i›¶h«¶mË²,Ë²„†¬         iš¦iš¦iš¦iš¦iš¦iš¦išfY–eY–eY–eY–eY–eY–eY–eY–eY–eY–eY–eY–eY@hÈ* @ @ÇqÇq$ER$Çr,Y È   @R,År4Gs4Çs<Çs<GtDÉ”LÍôLY        @1ÅqÉÑ$OR-Ór5Ws=×sM×u]WUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUÐU    !f–j€3a 4d €   ¡CY    ˆ¡ä šÐšóÍ9šå ©›ÓÁ‰T›'¹©˜›sÎ9çœlÎãœsÎ)Ê™Å ™ÐšsÎIš¥ ™ÐšsÎy›­©ÒšsÎçœÆaœsÎiÒš©ÙX›sÎYÐšæ¨¹›sÎ‰”›'µ¹T›sÎ9çœsÎ9çœsÎ©^œÎÁ9áœsÎ‰Ú›k¹	]œsÎùdœîÍ	áœsÎ9çœsÎ9çœsÎ	BCV @  aØÆ‚ }Žb!¦!“t“ 1È)¤ŽFJ©ƒPR'¥t‚ÐU     „RH!…RH!…RH!†bˆ!§œr
@@ -267855,14 +267929,17 @@ k¿´êxdwäçÇ{²«¹Ê¡œcÌä¥.—8ÿìxLÈvX„ìü€¼ìoRPÆÐÝTWM¾%MWQx$»ï½wÍµüŠ%ðÎ]²aN1T¿
   *p  °Qds‚‘ BCV y  €1J9¡”F)Æ ”’R£cJI©rB))ÅV9¡””Zì ”ÒZl5vJi-ÆZCJ­ÅXk®!¥Öb¬5×ÔZŒµæškJ-ÆZkÍ¹  Ü °E6'	*4d%  € ¤cŒ1†bŠ1çœC)Å˜sÎ)¦sÎ9ç”bŒ9çœsŒ1çœsÎ9Æ˜sÎ9çsÎ9çœsŽ9çœsÎ9çœsÎ9çœsÎ9çœsÎ	  *p  °Qds‚‘ BCV ©   VbŒ1Æ1ÆcŒ1FbŒ1Æcl1ÆcŒ1Æ˜bŒ1ÆcŒ1ÆcŒ1ÆcŒ1ÆcŒ1ÆcŒ1ÆcŒ1ÆcŒ1ÆcŒ1ÆcŒ1ÆcŒ1Æ[k­µÖZk­µÖZk­µÖZk­ @¿
  ÿVG8),4d%   Ã˜sŽ9„†)è¤„B¡CJ9(%„PJ))sNJJ¥¤”ZJ™sRR*%¥–Rê ¤ÔZJ-µÖZ%¥ÖRj­µÖ:¥´ÔZk­µØAH)¥ÖZ‹-ÆPJJ­µØbŒ5†RRj­ÅØb¬1¤ÒRl-Æc¬¡”ÖZk1Æk-)µÖbŒµÆZkI©µÖb‹5ÖZ ànp €H°q†•¤³ÂÑàBCV ! BŒ9çœsB!RŠ1ç ƒB!DJ1ætB!„Œ1ç ƒB!„1ætB!„:ç„B¡„RJçtB!”PBé „B¡„RJ)„B(¡„RJ)%„B	¥”RJ)¥„B¡„J)¥”B¥”RJ)¥”B!”RJ)¥”RB¡”PJ)¥”RJ!„RJ)¥”RJ	!„PJ)¥”RJ)!„J)¥”RJ)¥  € € #è$£Ê"l4áÂPhÈJ €  qØjë)ÖÈ Åœ„–K„rb.RŠ9G±eHÅÕ”1¥SRkèœbŒQOcJ1Ã¬”VJ(‘‚Òr¬µvÌ    0!3@È €„)  °ÀÐ1\ä2
 
-Ç„sÒi „È‘ˆXª¢b: X\`È€´‹è2À]Üu „ !ˆÅ€ƒnxâO¸Á	:E¥        ’ ""š9Ž‘’“”     à€ €$ˆˆˆfŽ£Ãã$Dd„¤Ää%                 OggS \      Nw     “¡þß
-03©…|‚Œ–œ·dŠ>âk¶<;Ý:© ¹ùÛVUƒË^÷ßÓ‹ç¿«ë¦sI{c;IœáNHu Dž‘{®±ûèÉŠô¹.äš}/fÔ’&)®	˜8á–´¶pÊ>§pÉTQð¦0™Wð­ð úöþðÿ_"âŸùLû6.ûíXÝ»mÜÆŒ B€ç^hà©6ö JBA‚ Ÿ@?a’€  ŸÜÿÿ¿ÿ:·®65ùx¥65³P¸‘›U*›Íf³Y   ëªŠÛífëFÍÆ}ƒÙT)¥(    {P@8B2©
-\O“ª    …šDSÚ¶qŒª  Ã]ŽsœQÇj   T  öAþø-ÏÑï0fY“>î9OUþÙ+ý r   ?ð÷À À–„Â%úY ý„	Bi !ÈÇ  D ²<ÜK       ¸À€Ô     ‹+ žÞF    `Ùb?_¼©åL×k¿÷Ø     ²fS""     ò+±  þø­ÏÅï0•šï)oPq)P	á  „  ú«	€9À$d€ ýì€~Â„R B Üû~  ÀÓ+ äè¹%V     øõ0  É·1 àßA     P©å
-H]Hª   ø[ŸOï9    €ÔñË   È¨ ~ˆ-Ï­¿adp9=—¼ƒ
-3%¥  B  ý`°&Ö@ˆý¬æà A  ¬óÓ  àä4	 *íE      ¼ø |Žá °=³    ÄñøÜ¨à  ‘‡ŸE…ÁÜ”þ¾     €Æ!—vf  |6ùo0  -·‹ß!"µRA6;Â 2 x>9®s€EIà\NŠ) ¯    €”ü{Ðn$(    €¾»P%¹
-  ”$ª‘Xzç_Q4W)  @g˜x¬bsŽÍßD€àŒVqk°ü§¼±éi:+Œ[À{g  Ýk±Q´ëXÄ þÆl—­ÿÁv_ÔDžº¤  B € p° ð”’  æ
-À’Ì à“  À`/ €Ã>      @Ë»&pÊëçtÃ9¥Px) € v{o­bÞö›kÝó»    À4¹†Ú ­ß: 1<Ì»d§P¸”^†EÁ†ÊŠàËÁzK’Ô–@9˜h¾Ö,×ÓÏ4Ö¢OA^’Mç~   d pÝÏÀýØ xZ>À¹É PÊpp;ÿw³ßK€~g     ÉrÝ  ƒmP     $<ìÆ" ”¦g*’îÇ;  Ð  e3¶ ˜Ð%Zð%žÒðÆ£ŒJ @&ì›€%ð— A³F{)vþ2»Rfûl²òMKzbÀa¾e¼/Â¥¸NÀ˜ò¡Ÿí‘û`tUÆÛÈ€[€™c¼M8À. ¤pZÎ hÙðùáÔ'_ýŸø÷ŸÔº”m¿H¼ò-Ä¨­‰Wb„†¿Zvÿe~ýÞàÛ™D€ Tk­ÉäGòoð<BÉÄñâ½
-LÀížÌ\BÃÀõ5àÞ F¸Þ`˜Â}Ë“LE 0ñßÏeŠáá™ððü¬=??cØŸŸŸ1LMaÑ‹&S(2p»n€ëOggS         ùX      +~Ýôvorbis    €»       q     ¸OggS          ùX     ŸäãÉDÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ‘vorbis4   Xiph.Org libVorbis I 20200704 (Reducing Environment)    vorbis)BCV    1L Å€ÐU    `$)“fI)¥”¡(y˜”HI)¥”Å0‰˜”‰ÅcŒ1ÆcŒ1ÆcŒ 4d   €(	Ž£æIjÎ9g'Žr 9iN8§ ŠQà9	Âõ&cn¦´¦knÎ)%Y   @H!…RH!…bˆ!†bˆ!‡rÈ!§œr
+Ç„sÒi „È‘ˆXª¢b: X\`È€´‹è2À]Üu „ !ˆÅ€ƒnxâO¸Á	:E¥        ’ ""š9Ž‘’“”     à€ €$ˆˆˆfŽ£Ãã$Dd„¤Ää%                 OggS \      »uz   '®79
+03¥…y~¥«Êl‚}‰Ð=7(ŸÚr?é€Ô *?f·TãÁíÚô¿ay~®®›=ÏÅvÓt³“¦ki4K4–‘G®Šgÿô$Dë‚¯ÙË‚ZÒ$Å5ãšðCZûÜ¡ìKá’UAD¬ÂtVÁ·Â_ ºøõþôÿ_"¿áÇgø:ômlÞQì¶qF	 ¡Às/´?ðT› { %¡ AÐÏ
+ Ÿ°I
+@ˆ €Oîÿÿõ×Ÿ[W›dòï•ÚÔÌBÿZnV©l6«+  `]UEÖ»YÀº’+³©RJQ     ö €p„dR¸ž6&U   
+™™D«šÐ^qª  Ã]ŽsœQÇj   T€6 ¾Ø-ÏÙïPÛ\Áå^ò”lªô @È  ?ð÷°  $.AÐÏè'LJ	Àø8  €¨	 Y&Ké         ð)C 5    À°qÄÓÛ    ,[ìç‹75dº>>Ul    È¥z$  °  ¿ žÈ-ÏÝïÐ”Ä OÏQÞ¥òJG  d ðû/è< æ “. ô³ú	;J	 pï3     ÃK È’S™     €_ |ƒ  þ     e–+ 5ŸT  ð·OŽÔ
+     5þw-Ï«ßamr%Ky®ó..–~   Ü&ý˜LBa„ØÏ` €ùš     @òw] p·3      \ø ža8 Êl     qœ;7*8 @äágQa0_?Õ~h  X  ß@AMþL   F ~Æ,—‹ßãa¼Š¾“ˆ~àz  ìæ¸Ì%AÀæ-3KúWk1Ë       é~Î€æ“      úî. %¹
+å  P’\¨VDb	:Ã4ÀƒTt€7qNÊG$P€P³·öÙ1=Íø
+ØøÕZmw‚K|œký²}eRÑyr=¾þ…,ÛÓïÁÌu¸ù d¾Ò  !€®€`Ž«Ã°(	b® X2ðB      'ó X6    ´Öy(”ótvS
+Âc ÔKALìöÞZÅ¼íg<Ž=Þ €Ú Í­ƒ“Vi¿ÎØL ¥5—ÒËBîÂ›ƒË¾Ü¬KÏ#â€mÞô_1»5¦Fž‡]'ïEn@©iqŽ¤Ä‘oÝ–mT þ…L×Ã7Xwã£xÃyI¶!úþ¿ 2 è3pÿÀ ý OKÂl.ÇBV–ÂNzµ        “ @º   € 	{ 5¦ÍR¥  #¨ã¿€(›#@é]¢m{¢±%”Õe\ ${Æ&€Þ€¦à›Ú/$#Ù?—,=y@ŸÜt¤5/=Ø
+Ìß$9¼Á,p²~vÐ žu¼Î£0êæúã³Mùà³= ÌAWe¼Í€¸ª8Çx›p€] dOVJ &ÓÉgÿýŸøüOj]ÊfŸßK¼òTˆQWY‰Õ„¡áçíÿÉüßc‡>1"x¢ÒZƒ&þäáëà
+àêü+EÏè.>` ‹Quaøo7ü¨‚¸	/MéGM‹à<?ifôç25µž‹ ±Ï¨óîâ0Åxp=\_Ãz¦)vœ†ÿuß	<Ó¼Ü¸Ë”üJÄ¬"°“SOggS         ùX      +~Ýôvorbis    €»       q     ¸OggS          ùX     ŸäãÉDÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ‘vorbis4   Xiph.Org libVorbis I 20200704 (Reducing Environment)    vorbis)BCV    1L Å€ÐU    `$)“fI)¥”¡(y˜”HI)¥”Å0‰˜”‰ÅcŒ1ÆcŒ1ÆcŒ 4d   €(	Ž£æIjÎ9g'Žr 9iN8§ ŠQà9	Âõ&cn¦´¦knÎ)%Y   @H!…RH!…bˆ!†bˆ!‡rÈ!§œr
 *¨ ‚
 2È ƒL2é¤“N:é¨£Ž:ê(´ÐB-´ÒJL1ÕVc®½]|sÎ9çœsÎ9çœsÎ	BCV    BdB!…Rˆ)¦˜r
 2È€ÐU    €    G‘I±Ë±ÍÑ$Oò,Q5Ñ3ESTMUUUUu]Wve×vu×v}Y˜…[¸}Y¸…[Ø…]÷…a†a†a†aø}ß÷}ß÷} 4d    #9–ã)¢"¢â9¢„†¬ d    	’")’£I¦fj®i›¶h«¶mË²,Ë²„†¬         iš¦iš¦iš¦iš¦iš¦iš¦išfY–eY–eY–eY–eY–eY–eY–eY–eY–eY–eY–eY–eY@hÈ* @ @ÇqÇq$ER$Çr,Y È   @R,År4Gs4Çs<Çs<GtDÉ”LÍôLY        @1ÅqÉÑ$OR-Ór5Ws=×sM×u]WUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUÐU    !f–j€3a 4d €   ¡CY    ˆ¡ä šÐšóÍ9šå ©›ÓÁ‰T›'¹©˜›sÎ9çœlÎãœsÎ)Ê™Å ™ÐšsÎIš¥ ™ÐšsÎy›­©ÒšsÎçœÆaœsÎiÒš©ÙX›sÎYÐšæ¨¹›sÎ‰”›'µ¹T›sÎ9çœsÎ9çœsÎ©^œÎÁ9áœsÎ‰Ú›k¹	]œsÎùdœîÍ	áœsÎ9çœsÎ9çœsÎ	BCV @  aØÆ‚ }Žb!¦!“t“ 1È)¤ŽFJ©ƒPR'¥t‚ÐU     „RH!…RH!…RH!†bˆ!§œr

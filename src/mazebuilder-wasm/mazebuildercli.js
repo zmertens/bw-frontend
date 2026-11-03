@@ -17,7 +17,7 @@ async function Module(moduleArg = {}) {
     return vers.join('');
   }
   // 300000 -> "30.0.0"
-  var packedVersionToHumanReadable = n => [n / 10000 | 0, (n / 100 | 0) % 100, n % 100].join('.');
+  var packedVersionToHumanReadable = n => [n / 10_000 | 0, (n / 100 | 0) % 100, n % 100].join('.');
 
   var TARGET_NOT_SUPPORTED = 2147483647;
 
@@ -870,32 +870,6 @@ async function createWasm() {
   
   
   var uncaughtExceptionCount = 0;
-  var ___cxa_begin_catch = (ptr) => {
-      var info = new ExceptionInfo(ptr);
-      if (!info.get_caught()) {
-        info.set_caught(true);
-        uncaughtExceptionCount--;
-      }
-      info.set_rethrown(false);
-      exceptionCaught.push(info);
-      return ___cxa_get_exception_ptr(ptr);
-    };
-
-  
-  
-  
-  var exceptionLast = null;
-  var ___cxa_end_catch = () => {
-      // Clear state flag.
-      _setThrew(0, 0);
-      assert(exceptionCaught.length > 0);
-      // Call destructor if one is registered then clear it.
-      var info = exceptionCaught.pop();
-  
-      ___cxa_decrement_exception_refcount(info.excPtr);
-      exceptionLast = null; // XXX in decRef?
-    };
-
   
   
   class ExceptionInfo {
@@ -954,9 +928,36 @@ async function createWasm() {
         return HEAPU32[(((this.ptr)+(16))>>2)];
       }
     }
+  var ___cxa_begin_catch = (ptr) => {
+      var info = new ExceptionInfo(ptr);
+      if (!info.get_caught()) {
+        info.set_caught(true);
+        uncaughtExceptionCount--;
+      }
+      info.set_rethrown(false);
+      exceptionCaught.push(info);
+      return ___cxa_get_exception_ptr(ptr);
+    };
+
   
   
+  
+  var exceptionLast = null;
+  var ___cxa_end_catch = () => {
+      // Clear state flag.
+      _setThrew(0, 0);
+      assert(exceptionCaught.length > 0);
+      // Call destructor if one is registered then clear it.
+      var info = exceptionCaught.pop();
+  
+      ___cxa_decrement_exception_refcount(info.excPtr);
+      exceptionLast = null; // XXX in decRef?
+    };
+
   var setTempRet0 = (val) => __emscripten_tempret_set(val);
+  
+  
+  
   var findMatchingCatch = (args) => {
       var thrown = exceptionLast?.excPtr;
       if (!thrown) {
@@ -1198,17 +1199,8 @@ async function createWasm() {
           var buf = Buffer.alloc(BUFSIZE);
           var bytesRead = 0;
   
-          // For some reason we must suppress a closure warning here, even though
-          // fd definitely exists on process.stdin, and is even the proper way to
-          // get the fd of stdin,
-          // https://github.com/nodejs/help/issues/2136#issuecomment-523649904
-          // This started to happen after moving this logic out of library_tty.js,
-          // so it is related to the surrounding code in some unclear manner.
-          /** @suppress {missingProperties} */
-          var fd = process.stdin.fd;
-  
           try {
-            bytesRead = fs.readSync(fd, buf, 0, BUFSIZE);
+            bytesRead = fs.readSync(process.stdin.fd, buf, 0, BUFSIZE);
           } catch(e) {
             // Cross-platform differences: on Windows, reading EOF throws an
             // exception, but on other OSes, reading EOF returns 0. Uniformize
@@ -1218,7 +1210,7 @@ async function createWasm() {
           }
   
           if (bytesRead > 0) {
-            result = buf.slice(0, bytesRead).toString('utf-8');
+            result = buf.toString('utf-8', 0, bytesRead);
           }
         } else
         if (globalThis.window?.prompt) {
@@ -1391,7 +1383,7 @@ async function createWasm() {
   mount(mount) {
         return MEMFS.createNode(null, '/', 16895, 0);
       },
-  createNode(parent, name, mode, dev) {
+  createNode(parent, name, mode, dev = undefined) {
         if (FS.isBlkdev(mode) || FS.isFIFO(mode)) {
           // not supported
           throw new FS.ErrnoError(63);
@@ -1522,6 +1514,11 @@ async function createWasm() {
           attr.atime = new Date(node.atime);
           attr.mtime = new Date(node.mtime);
           attr.ctime = new Date(node.ctime);
+          // A Date only holds whole milliseconds: also return the exact times
+          // (e.g. as set by utimensat), which SYSCALLS.writeStat prefers.
+          attr.atimeMs = node.atime;
+          attr.mtimeMs = node.mtime;
+          attr.ctimeMs = node.ctime;
           // NOTE: In our implementation, st_blocks = Math.ceil(st_size/st_blksize),
           //       but this is not required by the standard.
           attr.blksize = 4096;
@@ -1541,7 +1538,7 @@ async function createWasm() {
   lookup(parent, name) {
           throw new FS.ErrnoError(44);
         },
-  mknod(parent, name, mode, dev) {
+  mknod(parent, name, mode, dev = undefined) {
           return MEMFS.createNode(parent, name, mode, dev);
         },
   rename(old_node, new_dir, new_name) {
@@ -1549,14 +1546,11 @@ async function createWasm() {
           try {
             new_node = FS.lookupNode(new_dir, new_name);
           } catch (e) {}
-          if (new_node) {
-            if (FS.isDir(old_node.mode)) {
-              // if we're overwriting a directory at new_name, make sure it's empty.
-              for (var i in new_node.contents) {
-                throw new FS.ErrnoError(55);
-              }
+          if (new_node && FS.isDir(old_node.mode)) {
+            // if we're overwriting a directory at new_name, make sure it's empty.
+            for (var i in new_node.contents) {
+              throw new FS.ErrnoError(55);
             }
-            FS.hashRemoveNode(new_node);
           }
           // do the internal rewiring
           delete old_node.parent.contents[old_node.name];
@@ -1887,7 +1881,7 @@ async function createWasm() {
         assert(ENVIRONMENT_IS_NODE);
         return NODEFS.createNode(null, '/', NODEFS.getMode(mount.opts.root), 0);
       },
-  createNode(parent, name, mode, dev) {
+  createNode(parent, name, mode, dev = undefined) {
         if (!FS.isDir(mode) && !FS.isFile(mode) && !FS.isLink(mode)) {
           throw new FS.ErrnoError(28);
         }
@@ -1935,7 +1929,7 @@ async function createWasm() {
         }
         return newFlags;
       },
-  getattr(func, node) {
+  doGetAttr(func, node) {
         var stat = NODEFS.tryFSOperation(func);
         if (NODEFS.isWindows) {
           // node.js v0.10.20 doesn't report blksize and blocks on Windows. Fake
@@ -1963,11 +1957,14 @@ async function createWasm() {
           atime: stat.atime,
           mtime: stat.mtime,
           ctime: stat.ctime,
+          atimeMs: stat.atimeMs,
+          mtimeMs: stat.mtimeMs,
+          ctimeMs: stat.ctimeMs,
           blksize: stat.blksize,
           blocks: stat.blocks
         };
       },
-  setattr(arg, node, attr, chmod, utimes, truncate, stat) {
+  doSetAttr(arg, node, attr, chmod, utimes, truncate, stat) {
         NODEFS.tryFSOperation(() => {
           if (attr.mode !== undefined) {
             var mode = attr.mode;
@@ -1986,9 +1983,14 @@ async function createWasm() {
             // this will only keep the value nearly unchanged not exactly
             // unchanged. See:
             // https://github.com/nodejs/node/issues/56492
-            var atime = new Date(attr.atime ?? stat(arg).atime);
-            var mtime = new Date(attr.mtime ?? stat(arg).mtime);
-            utimes(arg, atime, mtime);
+            var atime = attr.atime;
+            var mtime = attr.mtime;
+            if (atime == null || mtime == null) {
+              var st = stat(arg);
+              atime ??= st.atimeMs;
+              mtime ??= st.mtimeMs;
+            }
+            utimes(arg, atime / 1000, mtime / 1000);
           }
           if (attr.size !== undefined) {
             truncate(arg, attr.size);
@@ -1998,7 +2000,7 @@ async function createWasm() {
   node_ops:{
   getattr(node) {
           var path = NODEFS.realPath(node);
-          return NODEFS.getattr(() => fs.lstatSync(path), node);
+          return NODEFS.doGetAttr(() => fs.lstatSync(path), node);
         },
   setattr(node, attr) {
           var path = NODEFS.realPath(node);
@@ -2009,14 +2011,14 @@ async function createWasm() {
           // timestamps are set without the host resolving it, which would
           // otherwise escape the NODEFS mount root.
           var utimes = attr.dontFollow ? fs.lutimesSync : fs.utimesSync;
-          NODEFS.setattr(path, node, attr, fs.chmodSync, utimes, fs.truncateSync, fs.lstatSync);
+          NODEFS.doSetAttr(path, node, attr, fs.chmodSync, utimes, fs.truncateSync, fs.lstatSync);
         },
   lookup(parent, name) {
           var path = PATH.join2(NODEFS.realPath(parent), name);
           var mode = NODEFS.getMode(path);
           return NODEFS.createNode(parent, name, mode);
         },
-  mknod(parent, name, mode, dev) {
+  mknod(parent, name, mode, dev = undefined) {
           var node = NODEFS.createNode(parent, name, mode, dev);
           // create the backing node for this in the fs root as well
           var path = NODEFS.realPath(node);
@@ -2032,9 +2034,6 @@ async function createWasm() {
   rename(oldNode, newDir, newName) {
           var oldPath = NODEFS.realPath(oldNode);
           var newPath = PATH.join2(NODEFS.realPath(newDir), newName);
-          try {
-            FS.unlink(newPath);
-          } catch(e) {}
           NODEFS.tryFSOperation(() => fs.renameSync(oldPath, newPath));
           oldNode.name = newName;
         },
@@ -2068,10 +2067,10 @@ async function createWasm() {
   },
   stream_ops:{
   getattr(stream) {
-          return NODEFS.getattr(() => fs.fstatSync(stream.nfd), stream.node);
+          return NODEFS.doGetAttr(() => fs.fstatSync(stream.nfd), stream.node);
         },
   setattr(stream, attr) {
-          NODEFS.setattr(stream.nfd, stream.node, attr, fs.fchmodSync, fs.futimesSync, fs.ftruncateSync, fs.fstatSync);
+          NODEFS.doSetAttr(stream.nfd, stream.node, attr, fs.fchmodSync, fs.futimesSync, fs.ftruncateSync, fs.fstatSync);
         },
   open(stream) {
           var path = NODEFS.realPath(stream.node);
@@ -2130,7 +2129,7 @@ async function createWasm() {
           return { ptr, allocated: true };
         },
   msync(stream, buffer, offset, length, mmapFlags) {
-          NODEFS.stream_ops.write(stream, buffer, 0, length, offset, false);
+          NODEFS.stream_ops.write(stream, buffer, 0, length, offset);
           // should we check if bytesWritten and length are the same?
           return 0;
         },
@@ -2221,10 +2220,15 @@ async function createWasm() {
         return { path, node: { id: st.ino, mode, node_ops: NODERAWFS, path }};
       },
   createStandardStreams() {
-        FS.createStream({ nfd: 0, position: 0, path: '/dev/stdin', flags: 0 }, 0);
-        var paths = [,'/dev/stdout', '/dev/stderr'];
-        for (var i = 1; i < 3; i++) {
-          FS.createStream({ nfd: i, position: 0, path: paths[i], flags: 577 }, i);
+        var paths = ['/dev/stdin', '/dev/stdout', '/dev/stderr'];
+        for (var i = 0; i < 3; i++) {
+          // Like open() below, give the stream a node carrying the identity of
+          // whatever the inherited descriptor refers to (tty, pipe, file, ...):
+          // every stream has a node.
+          var st = fs.fstatSync(i);
+          var node = { id: st.ino, mode: st.mode, node_ops: NODERAWFS, path: paths[i] };
+          var flags = i ? 577 : 0;
+          FS.createStream({ nfd: i, position: 0, path: paths[i], flags, node }, i);
         }
       },
   cwd() { return process.cwd(); },
@@ -2251,7 +2255,7 @@ async function createWasm() {
   readdir(...args) { return ['.', '..'].concat(fs.readdirSync(...args)); },
   unlink(...args) { fs.unlinkSync(...args); },
   readlink(...args) { return fs.readlinkSync(...args); },
-  stat(path, dontFollow) {
+  stat(path, dontFollow = false) {
         var stat = dontFollow ? fs.lstatSync(path) : fs.statSync(path);
         if (NODEFS.isWindows) {
           // Windows does not report the 'x' permission bit, so propagate read
@@ -2283,7 +2287,7 @@ async function createWasm() {
   statfsStream(stream) {
         return FS.statfs(stream.path);
       },
-  chmod(path, mode, dontFollow) {
+  chmod(path, mode, dontFollow = false) {
         mode &= 4095;
         if (NODEFS.isWindows) {
           // Windows only supports S_IREAD / S_IWRITE (S_IRUSR / S_IWUSR)
@@ -2321,14 +2325,14 @@ async function createWasm() {
         var stream = FS.getStreamChecked(fd);
         fs.ftruncateSync(stream.nfd, len);
       },
-  utime(path, atime, mtime, dontFollow) {
+  utime(path, atime, mtime, dontFollow = false) {
         // null here for atime or mtime means UTIME_OMIT was passed.  Since node
         // doesn't support this concept we need to first find the existing
         // timestamps in order to preserve them.
         if ((atime === null) || (mtime === null)) {
           var st = dontFollow ? fs.lstatSync(path) : fs.statSync(path);
-          atime ||= st.atimeMs;
-          mtime ||= st.mtimeMs;
+          atime ??= st.atimeMs;
+          mtime ??= st.mtimeMs;
         }
         if (dontFollow) {
           fs.lutimesSync(path, atime/1000, mtime/1000);
@@ -2368,6 +2372,7 @@ async function createWasm() {
   
   
   var strError = (errno) => UTF8ToString(_strerror(errno));
+  
   
   
   var asyncLoad = async (url) => {
@@ -2448,7 +2453,7 @@ async function createWasm() {
           if (shown) {
             err('(end of list)');
           }
-        }, 10000);
+        }, 10_000);
         // Prevent this timer from keeping the runtime alive if nothing
         // else is.
         runDependencyWatcher.unref?.()
@@ -2504,7 +2509,7 @@ async function createWasm() {
   },
   streams:[],
   nextInode:1,
-  nameTable:null,
+  nameTable:[],
   currentPath:"/",
   initialized:false,
   ignorePermissions:true,
@@ -2773,7 +2778,7 @@ async function createWasm() {
         // if we failed to find it in the cache, call into the VFS
         return FS.lookup(parent, name);
       },
-  createNode(parent, name, mode, rdev) {
+  createNode(parent, name, mode, rdev = undefined) {
         assert(typeof parent == 'object')
         var node = new FS.FSNode(parent, name, mode, rdev);
   
@@ -3148,9 +3153,9 @@ async function createWasm() {
         var rtn = {
           bsize: 4096,
           frsize: 4096,
-          blocks: 1e6,
-          bfree: 5e5,
-          bavail: 5e5,
+          blocks: 1_000_000,
+          bfree: 500_000,
+          bavail: 500_000,
           files: FS.nextInode,
           ffree: FS.nextInode - 1,
           fsid: 42,
@@ -3173,7 +3178,7 @@ async function createWasm() {
         mode |= 16384;
         return FS.mknod(path, mode, 0);
       },
-  mkdirTree(path, mode) {
+  mkdirTree(path, mode = 0o777) {
         var dirs = path.split('/');
         var d = '';
         for (var dir of dirs) {
@@ -3187,7 +3192,7 @@ async function createWasm() {
           }
         }
       },
-  mkdev(path, mode, dev) {
+  mkdev(path, mode, dev = undefined) {
         if (typeof dev == 'undefined') {
           dev = mode;
           mode = 0o666;
@@ -3307,6 +3312,11 @@ async function createWasm() {
         // do the underlying fs rename
         try {
           old_dir.node_ops.rename(old_node, new_dir, new_name);
+          // The replaced node is stale now. Evict it only after the rename
+          // succeeded: backends like NODEFS report node.id as st_ino.
+          if (new_node) {
+            FS.hashRemoveNode(new_node);
+          }
           // update old node (we do this here to avoid each backend
           // needing to)
           old_node.parent = new_dir;
@@ -3377,7 +3387,7 @@ async function createWasm() {
         }
         return link.node_ops.readlink(link);
       },
-  stat(path, dontFollow) {
+  stat(path, dontFollow = false) {
         var lookup = FS.lookupPath(path, { follow: !dontFollow });
         var node = lookup.node;
         var getattr = FS.checkOpExists(node.node_ops.getattr, 63);
@@ -3395,14 +3405,14 @@ async function createWasm() {
   lstat(path) {
         return FS.stat(path, true);
       },
-  doChmod(stream, node, mode, dontFollow) {
+  doChmod(stream, node, mode, dontFollow = false) {
         FS.doSetAttr(stream, node, {
           mode: (mode & 4095) | (node.mode & ~4095),
           ctime: Date.now(),
           dontFollow
         });
       },
-  chmod(path, mode, dontFollow) {
+  chmod(path, mode, dontFollow = false) {
         var node;
         if (typeof path == 'string') {
           var lookup = FS.lookupPath(path, { follow: !dontFollow });
@@ -3419,14 +3429,14 @@ async function createWasm() {
         var stream = FS.getStreamChecked(fd);
         FS.doChmod(stream, stream.node, mode, false);
       },
-  doChown(stream, node, dontFollow) {
+  doChown(stream, node, dontFollow = false) {
         FS.doSetAttr(stream, node, {
           timestamp: Date.now(),
           dontFollow
           // we ignore the uid / gid for now
         });
       },
-  chown(path, uid, gid, dontFollow) {
+  chown(path, uid, gid, dontFollow = false) {
         var node;
         if (typeof path == 'string') {
           var lookup = FS.lookupPath(path, { follow: !dontFollow });
@@ -3479,7 +3489,7 @@ async function createWasm() {
         }
         FS.doTruncate(stream, stream.node, len);
       },
-  utime(path, atime, mtime, dontFollow) {
+  utime(path, atime, mtime, dontFollow = false) {
         var lookup = FS.lookupPath(path, { follow: !dontFollow });
         FS.doSetAttr(null, lookup.node, {
           atime: atime,
@@ -3618,7 +3628,7 @@ async function createWasm() {
         stream.ungotten = [];
         return stream.position;
       },
-  read(stream, buffer, offset, length, position) {
+  read(stream, buffer, offset, length, position = undefined) {
         assert(offset >= 0);
         if (length < 0 || position < 0) {
           throw new FS.ErrnoError(28);
@@ -3645,7 +3655,7 @@ async function createWasm() {
         if (!seeking) stream.position += bytesRead;
         return bytesRead;
       },
-  write(stream, buffer, offset, length, position, canOwn) {
+  write(stream, buffer, offset, length, position = undefined, canOwn = undefined) {
         assert(offset >= 0);
         assert(buffer.subarray, 'FS.write expects a TypedArray');
         if (length < 0 || position < 0) {
@@ -3714,8 +3724,8 @@ async function createWasm() {
         return stream.stream_ops.ioctl(stream, cmd, arg);
       },
   readFile(path, opts = {}) {
-        opts.flags = opts.flags ?? 0;
-        opts.encoding = opts.encoding ?? 'binary';
+        opts.flags ??= 0;
+        opts.encoding ??= 'binary';
         if (opts.encoding !== 'utf8' && opts.encoding !== 'binary') {
           abort(`Invalid encoding type "${opts.encoding}"`);
         }
@@ -3731,7 +3741,7 @@ async function createWasm() {
         return buf;
       },
   writeFile(path, data, opts = {}) {
-        opts.flags = opts.flags ?? 577;
+        opts.flags ??= 577;
         var stream = FS.open(path, opts.flags, opts.mode);
         data = FS_fileDataToTypedArray(data);
         FS.write(stream, data, 0, data.byteLength, undefined, opts.canOwn);
@@ -3860,7 +3870,7 @@ async function createWasm() {
         assert(stderr.fd === 2, `invalid handle for stderr (${stderr.fd})`);
       },
   staticInit() {
-        FS.nameTable = new Array(4096);
+        FS.nameTable.length = 4096;
   
         FS.mount(MEMFS, {}, '/');
   
@@ -3873,7 +3883,7 @@ async function createWasm() {
           'NODEFS': NODEFS,
         };
       },
-  init(input, output, error) {
+  init(input = undefined, output = undefined, error = undefined) {
         assert(!FS.initialized, 'FS.init was previously called. If you want to initialize later with custom parameters, remove any earlier calls (note that one is automatically added to the generated code)');
         FS.initialized = true;
   
@@ -3895,14 +3905,8 @@ async function createWasm() {
           }
         }
       },
-  findObject(path, dontResolveLastLink) {
-        var ret = FS.analyzePath(path, dontResolveLastLink);
-        if (!ret.exists) {
-          return null;
-        }
-        return ret.object;
-      },
-  analyzePath(path, dontResolveLastLink) {
+  analyzePath(path, dontResolveLastLink = false) {
+        warnOnce('FS.analyzePath is deprecated; use FS.lookupPath or FS.stat instead');
         // operate from within the context of the symlink's target
         try {
           var lookup = FS.lookupPath(path, { follow: !dontResolveLastLink });
@@ -3930,7 +3934,7 @@ async function createWasm() {
         };
         return ret;
       },
-  createPath(parent, path, canRead, canWrite) {
+  createPath(parent, path, canRead = undefined, canWrite = undefined) {
         parent = typeof parent == 'string' ? parent : FS.getPath(parent);
         var parts = path.split('/').reverse();
         while (parts.length) {
@@ -3946,12 +3950,12 @@ async function createWasm() {
         }
         return current;
       },
-  createFile(parent, name, properties, canRead, canWrite) {
+  createFile(parent, name, properties, canRead = undefined, canWrite = undefined) {
         var path = PATH.join2(typeof parent == 'string' ? parent : FS.getPath(parent), name);
         var mode = FS_getMode(canRead, canWrite);
         return FS.create(path, mode);
       },
-  createDataFile(parent, name, data, canRead, canWrite, canOwn) {
+  createDataFile(parent, name, data = undefined, canRead = undefined, canWrite = undefined, canOwn = undefined) {
         var path = name;
         if (parent) {
           parent = typeof parent == 'string' ? parent : FS.getPath(parent);
@@ -3969,7 +3973,7 @@ async function createWasm() {
           FS.chmod(node, mode);
         }
       },
-  createDevice(parent, name, input, output) {
+  createDevice(parent, name, input = undefined, output = undefined) {
         var path = PATH.join2(typeof parent == 'string' ? parent : FS.getPath(parent), name);
         var mode = FS_getMode(!!input, !!output);
         FS.createDevice.major ??= 64;
@@ -4035,7 +4039,7 @@ async function createWasm() {
           }
         }
       },
-  createLazyFile(parent, name, url, canRead, canWrite) {
+  createLazyFile(parent, name, url, canRead = undefined, canWrite = undefined) {
         // Lazy chunked Uint8Array (implements get and length from Uint8Array).
         // Actual getting is abstracted away for eventual reuse.
         class LazyUint8Array {
@@ -4205,7 +4209,7 @@ async function createWasm() {
   var HEAP64;
   var SYSCALLS = {
   currentUmask:18,
-  calculateAt(dirfd, path, allowEmpty) {
+  calculateAt(dirfd, path, allowEmpty = false) {
         if (PATH.isAbs(path)) {
           return path;
         }
@@ -4235,15 +4239,18 @@ async function createWasm() {
         HEAP64[(((buf)+(24))>>3)] = BigInt(stat.size);
         HEAP32[(((buf)+(32))>>2)] = 4096;
         HEAP32[(((buf)+(36))>>2)] = stat.blocks;
-        var atime = stat.atime.getTime();
-        var mtime = stat.mtime.getTime();
-        var ctime = stat.ctime.getTime();
+        // Prefer `*Ms` properties if available (e.g. from MEMFS, or NODEFS / host
+        // `fs.Stats`) for sub-millisecond precision; fall back to Date#getTime for
+        // other filesystems.
+        var atime = stat.atimeMs ?? stat.atime.getTime();
+        var mtime = stat.mtimeMs ?? stat.mtime.getTime();
+        var ctime = stat.ctimeMs ?? stat.ctime.getTime();
         HEAP64[(((buf)+(40))>>3)] = BigInt(Math.floor(atime / 1000));
-        HEAPU32[(((buf)+(48))>>2)] = (atime % 1000) * 1000 * 1000;
+        HEAPU32[(((buf)+(48))>>2)] = Math.floor((atime % 1000) * 1_000_000);
         HEAP64[(((buf)+(56))>>3)] = BigInt(Math.floor(mtime / 1000));
-        HEAPU32[(((buf)+(64))>>2)] = (mtime % 1000) * 1000 * 1000;
+        HEAPU32[(((buf)+(64))>>2)] = Math.floor((mtime % 1000) * 1_000_000);
         HEAP64[(((buf)+(72))>>3)] = BigInt(Math.floor(ctime / 1000));
-        HEAPU32[(((buf)+(80))>>2)] = (ctime % 1000) * 1000 * 1000;
+        HEAPU32[(((buf)+(80))>>2)] = Math.floor((ctime % 1000) * 1_000_000);
         HEAP64[(((buf)+(88))>>3)] = BigInt(stat.ino);
         return 0;
       },
@@ -5561,6 +5568,19 @@ Originally allocated`); // `.stack` will add "at ..." after this sentence
       return false;
     }
   
+  function argsUseStackAlloc(argTypes) {
+      // Skip return value at index 0 - only arguments stack-allocate.
+      for (var i = 1; i < argTypes.length; ++i) {
+        if (argTypes[i] !== null && argTypes[i].argStackAlloc) {
+          return true;
+        }
+      }
+      return false;
+    }
+  
+  
+  
+  
   
   function checkArgCount(numArgs, minArgs, maxArgs, humanName, throwBindingError) {
       if (numArgs < minArgs || numArgs > maxArgs) {
@@ -5570,6 +5590,16 @@ Originally allocated`); // `.stack` will add "at ..." after this sentence
     }
   function createJsInvoker(argTypes, isClassMethodFunc, returns, isAsync) {
       var needsDestructorStack = usesDestructorStack(argTypes);
+      var argsNeedStack = argsUseStackAlloc(argTypes);
+      // JSPI-async invokers resume after the frame would be gone, so they
+      // defer through the destructors array instead.
+      var useStackFrame = argsNeedStack && !isAsync && !needsDestructorStack;
+      if (argsNeedStack && !useStackFrame) {
+        // A stack-allocating type must never see a null destructors argument
+        // without a bracketing frame; route it through the destructors array
+        // (it heap-allocates on that path).
+        needsDestructorStack = true;
+      }
       var argCount = argTypes.length - 2;
       var argsList = [];
       var argsListWired = ['fn'];
@@ -5590,9 +5620,18 @@ Originally allocated`); // `.stack` will add "at ..." after this sentence
       if (needsDestructorStack) {
         invokerFnBody += 'var destructors = [];\n';
       }
+      if (useStackFrame) {
+        // The frame must be released on every completion, including a throwing
+        // argument conversion or callee: a skipped stackRestore permanently
+        // leaks wasm stack. `var` declarations hoist out of the try block.
+        invokerFnBody += 'var sp = stackSave();\ntry {\n';
+      }
   
       var dtorStack = needsDestructorStack ? 'destructors' : 'null';
       var args1 = ['humanName', 'throwBindingError', 'invoker', 'fn', 'runDestructors', 'fromRetWire', 'toClassParamWire'];
+      if (useStackFrame) {
+        args1.push('stackSave', 'stackRestore');
+      }
   
       if (isClassMethodFunc) {
         invokerFnBody += `var thisWired = toClassParamWire(${dtorStack}, this);\n`;
@@ -5605,6 +5644,11 @@ Originally allocated`); // `.stack` will add "at ..." after this sentence
       }
   
       invokerFnBody += (returns || isAsync ? 'var rv = ' : '') + `invoker(${argsListWired});\n`;
+      if (useStackFrame) {
+        // The callee has consumed the stack-allocated argument temporaries;
+        // release the frame before any post-call work.
+        invokerFnBody += '} finally {\nstackRestore(sp);\n}\n';
+      }
   
       var returnVal = returns ? 'rv' : '';
   
@@ -5673,6 +5717,14 @@ Originally allocated`); // `.stack` will add "at ..." after this sentence
       // TODO: Remove this completely once all function invokers are being dynamically generated.
       var needsDestructorStack = usesDestructorStack(argTypes);
   
+      // Stack-allocating trivial value types get a stackSave/stackRestore
+      // bracket around the call; see createJsInvoker for the async carve-outs.
+      var argsNeedStack = argsUseStackAlloc(argTypes);
+      var useStackFrame = argsNeedStack && !isAsync && !needsDestructorStack;
+      if (argsNeedStack && !useStackFrame) {
+        needsDestructorStack = true;
+      }
+  
       var returns = !argTypes[0].isVoid;
   
       var expectedArgCount = argCount - 2;
@@ -5682,6 +5734,10 @@ Originally allocated`); // `.stack` will add "at ..." after this sentence
       var retType = argTypes[0];
       var instType = argTypes[1];
       var closureArgs = [humanName, throwBindingError, cppInvokerFunc, cppTargetFunc, runDestructors, retType.fromWireType.bind(retType), instType?.toWireType.bind(instType)];
+      if (useStackFrame) {
+        // Must mirror the `args1.push('stackSave', 'stackRestore')` in createJsInvoker.
+        closureArgs.push(stackSave, stackRestore);
+      }
       for (var i = 2; i < argCount; ++i) {
         var argType = argTypes[i];
         closureArgs.push(argType.toWireType.bind(argType));
@@ -6574,7 +6630,7 @@ ${functionBody}
         return 52;
       }
       // "now" is in ms, and wasi times are in ns.
-      var nsec = Math.round(now * 1000 * 1000);
+      var nsec = Math.round(now * 1_000_000);
       HEAP64[((ptime)>>3)] = BigInt(nsec);
       return 0;
     ;
@@ -7100,6 +7156,7 @@ if (Module['printErr']) err = Module['printErr'];
   'wasiRightsToMuslOFlags',
   'wasiOFlagsToMuslOFlags',
   'safeSetTimeout',
+  'safeClearTimeout',
   'setImmediateWrapped',
   'safeRequestAnimationFrame',
   'clearImmediateWrapped',
@@ -7151,14 +7208,14 @@ if (Module['printErr']) err = Module['printErr'];
   'demangle',
   'stackTrace',
   'getNativeTypeSize',
+  'getInheritedInstanceCount',
+  'getLiveInheritedInstances',
   'getFunctionArgsName',
   'createJsInvokerSignature',
   'getEnumValueType',
   'PureVirtualError',
   'registerInheritedInstance',
   'unregisterInheritedInstance',
-  'getInheritedInstanceCount',
-  'getLiveInheritedInstances',
   'enumReadValueFromPointer',
   'setDelayFunction',
   'validateThis',
@@ -7203,7 +7260,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'strError',
   'DNS',
   'Protocols',
-  'Sockets',
   'timers',
   'warnOnce',
   'readEmAsmArgsArray',
@@ -7255,7 +7311,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'initRandomFill',
   'randomFill',
   'emSetImmediate',
-  'emClearImmediate_deps',
   'emClearImmediate',
   'promiseMap',
   'uncaughtExceptionCount',
@@ -7270,9 +7325,7 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'Browser',
   'requestFullscreen',
   'setCanvasSize',
-  'getUserMedia',
   'createContext',
-  'getPreloadedImageData__data',
   'wget',
   'MONTH_DAYS_REGULAR',
   'MONTH_DAYS_LEAP',
@@ -7392,7 +7445,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'FS_staticInit',
   'FS_init',
   'FS_quit',
-  'FS_findObject',
   'FS_analyzePath',
   'FS_createFile',
   'FS_createDataFile',
@@ -7436,6 +7488,7 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'heap32VectorToArray',
   'requireRegisteredType',
   'usesDestructorStack',
+  'argsUseStackAlloc',
   'checkArgCount',
   'getRequiredArgCount',
   'createJsInvoker',
@@ -7469,7 +7522,6 @@ missingLibrarySymbols.forEach(missingLibrarySymbol)
   'runDestructor',
   'releaseClassHandle',
   'finalizationRegistry',
-  'detachFinalizer_deps',
   'detachFinalizer',
   'attachFinalizer',
   'makeClassHandle',
@@ -7751,28 +7803,6 @@ var wasmImports = {
   invoke_viiiiiiiiiiiiiii
 };
 
-function invoke_ii(index,a1) {
-  var sp = stackSave();
-  try {
-    return getWasmTableEntry(index)(a1);
-  } catch(e) {
-    stackRestore(sp);
-    if (!(e instanceof EmscriptenEH)) throw e;
-    _setThrew(1, 0);
-  }
-}
-
-function invoke_vi(index,a1) {
-  var sp = stackSave();
-  try {
-    getWasmTableEntry(index)(a1);
-  } catch(e) {
-    stackRestore(sp);
-    if (!(e instanceof EmscriptenEH)) throw e;
-    _setThrew(1, 0);
-  }
-}
-
 function invoke_iii(index,a1,a2) {
   var sp = stackSave();
   try {
@@ -7795,10 +7825,32 @@ function invoke_vii(index,a1,a2) {
   }
 }
 
+function invoke_ii(index,a1) {
+  var sp = stackSave();
+  try {
+    return getWasmTableEntry(index)(a1);
+  } catch(e) {
+    stackRestore(sp);
+    if (!(e instanceof EmscriptenEH)) throw e;
+    _setThrew(1, 0);
+  }
+}
+
 function invoke_iiii(index,a1,a2,a3) {
   var sp = stackSave();
   try {
     return getWasmTableEntry(index)(a1,a2,a3);
+  } catch(e) {
+    stackRestore(sp);
+    if (!(e instanceof EmscriptenEH)) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_vi(index,a1) {
+  var sp = stackSave();
+  try {
+    getWasmTableEntry(index)(a1);
   } catch(e) {
     stackRestore(sp);
     if (!(e instanceof EmscriptenEH)) throw e;
@@ -8094,13 +8146,8 @@ function checkUnflushedContent() {
   try { // it doesn't matter if it fails
     _fflush(0);
     // also flush in the JS FS layer
-    for (var name of ['stdout', 'stderr']) {
-      var info = FS.analyzePath('/dev/' + name);
-      if (!info) return;
-      var stream = info.object;
-      var rdev = stream.rdev;
-      var tty = TTY.ttys[rdev];
-      if (tty?.output?.length) {
+    for (var tty of Object.values(TTY.ttys)) {
+      if (tty.output.length) {
         has = true;
       }
     }
